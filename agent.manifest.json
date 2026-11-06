@@ -1,0 +1,23 @@
+{
+  "slug": "iot-surveillance-chaine-froid",
+  "name": "Surveillance de la chaine du froid",
+  "version": "1.0.0",
+  "description": "Agent IoT de surveillance thermique multi-depots.",
+  "filiere": "iot",
+  "category": "surveillance",
+  "developer": {"name": "Equipe ISIC Groupe 6", "email": "your-email@estin.dz"},
+  "team_name": "ISIC - Groupe 6",
+  "pricing_model": "flat_monthly",
+  "price": 0,
+  "endpoints": {
+    "base_url": "http://localhost:8001",
+    "health": "/health",
+    "activate": "/tenant/activate",
+    "deactivate": "/tenant/deactivate",
+    "status": "/tenant/{tenant_id}/status",
+    "config_schema": "/config-schema",
+    "exchange_notify": "/exchange/notify"
+  },
+  "produces": ["mesure_capteur"],
+  "consumes": []
+}
