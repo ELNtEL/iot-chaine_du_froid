@@ -1,4 +1,4 @@
-"""Step 11: step 10, plus the sensor state is published on the Noyau exchange (mesure_capteur)."""
+"""Step 12: step 11, plus every reading is also written to InfluxDB (history)."""
 import asyncio
 import json
 import os
@@ -22,6 +22,14 @@ WATCHDOG_INTERVAL = int(os.getenv("WATCHDOG_INTERVAL_SEC", "30"))   # how often 
 RETRY_WINDOW = 3600     # keep retrying an undelivered alert for up to 1 hour
 EXCHANGE_INTERVAL = int(os.getenv("EXCHANGE_PUBLISH_INTERVAL_SEC", "300"))   # publish at least this often
 last_published = {}     # (tenant, depot) -> when we last published, kept in memory
+
+# InfluxDB (history). It stays switched OFF until INFLUX_TOKEN is set, so the agent also works without it.
+INFLUX_URL = os.getenv("INFLUX_URL", "http://localhost:8086").rstrip("/")
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "")
+INFLUX_ORG = os.getenv("INFLUX_ORG", "estin_iot")
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "cold_chain_telemetry")
+influx = httpx.Client(timeout=2.0)       # short timeout: a slow InfluxDB must not freeze the MQTT thread
+_last_influx_warning = 0
 
 
 # ---------------------------------------------------------------- database
@@ -102,6 +110,63 @@ def retry_undelivered():
         data["renvoi"] = True                     # tells the Noyau this is a re-send
         print(f"RETRY: alert #{r['id']} ({r['event_type']}) for {r['tenant_id']}")
         deliver(r["id"], r["tenant_id"], r["api_key"], r["event_type"], r["severity"], data)
+
+
+# ---------------------------------------------------------------- InfluxDB history
+def influx_warn(message):
+    """Print at most one InfluxDB warning per minute, so a dead database does not flood the screen."""
+    global _last_influx_warning
+    if time.time() - _last_influx_warning > 60:
+        _last_influx_warning = time.time()
+        print("INFLUX:", message)
+
+
+def influx_tag(value):
+    """Escape a tag value for InfluxDB line protocol."""
+    return str(value).replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
+
+
+def influx_write(tenant, depot, device, data, ts):
+    """Store one reading. The tenant is a TAG on every point, so one company's data can be selected or deleted alone."""
+    if not INFLUX_TOKEN:
+        return
+    fields = []
+    for name in ("temperature_celsius", "probe_temperature_celsius", "humidity_percent", "battery_voltage"):
+        value = data.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields.append(f"{name}={float(value)}")
+    if isinstance(data.get("door_open"), bool):
+        fields.append(f"door_open={'true' if data['door_open'] else 'false'}")
+    if not fields:
+        return
+    line = (f"cold_chain_reading,tenant_id={influx_tag(tenant)},depot_id={influx_tag(depot)},"
+            f"device_id={influx_tag(device)} {','.join(fields)} {ts}")
+    try:
+        resp = influx.post(f"{INFLUX_URL}/api/v2/write",
+                           params={"org": INFLUX_ORG, "bucket": INFLUX_BUCKET, "precision": "s"},
+                           headers={"Authorization": f"Token {INFLUX_TOKEN}"}, content=line)
+        if resp.status_code != 204:
+            influx_warn(f"write refused: HTTP {resp.status_code} {resp.text[:120]}")
+    except httpx.HTTPError as exc:
+        influx_warn(f"could not write ({type(exc).__name__}): this reading is not in the history")
+
+
+def influx_delete(tenant):
+    """Delete ALL the history of one company. Returns True if done (or if InfluxDB is not used)."""
+    if not INFLUX_TOKEN:
+        return True
+    if '"' in tenant:
+        return False                                  # never build a delete rule from a suspicious name
+    stop = datetime.fromtimestamp(time.time() + 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        resp = influx.post(f"{INFLUX_URL}/api/v2/delete",
+                           params={"org": INFLUX_ORG, "bucket": INFLUX_BUCKET},
+                           headers={"Authorization": f"Token {INFLUX_TOKEN}"},
+                           json={"start": "1970-01-01T00:00:00Z", "stop": stop,
+                                 "predicate": f'_measurement="cold_chain_reading" AND tenant_id="{tenant}"'})
+        return resp.status_code == 204
+    except httpx.HTTPError:
+        return False
 
 
 # ---------------------------------------------------------------- shared exchange
@@ -229,6 +294,13 @@ def on_message(client, userdata, msg):
     conn.commit()
     conn.close()
 
+    # 4b. keep the full history in InfluxDB (use the sensor's own clock when it is believable)
+    sensor_ts = data.get("timestamp")
+    now_s = int(time.time())
+    if not isinstance(sensor_ts, int) or abs(now_s - sensor_ts) > 7 * 86400:
+        sensor_ts = now_s
+    influx_write(tenant, depot, device, data, sensor_ts)
+
     # 5. tell the Noyau, but only when the situation CHANGES (no message every 3 seconds)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     details = {"depot_id": depot, "device_id": device, "valeur": temp, "horodatage": now_iso}
@@ -340,6 +412,11 @@ def deactivate(x_tenant_id: Optional[str] = Header(default=None),
         conn.execute("DELETE FROM last_reading WHERE tenant_id = ?", (x_tenant_id,))
         conn.execute("DELETE FROM tenants WHERE tenant_id = ?", (x_tenant_id,))
         conn.commit()
+        conn.close()
+        purged = influx_delete(x_tenant_id)       # False if InfluxDB could not be cleaned
+        if not purged:
+            print(f"INFLUX: WARNING, history of {x_tenant_id} could NOT be deleted")
+        return ok({"deactivated": True, "data_purged": purged, "tenant_id": x_tenant_id})
     conn.close()
     return ok({"deactivated": True, "data_purged": True, "tenant_id": x_tenant_id})
 
