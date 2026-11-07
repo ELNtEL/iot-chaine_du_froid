@@ -1,4 +1,4 @@
-"""Step 12: step 11, plus every reading is also written to InfluxDB (history)."""
+"""Step 13: step 12, plus the agent logs in to Mosquitto with a username and password."""
 import asyncio
 import json
 import os
@@ -14,7 +14,10 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import JSONResponse
 
 DB_FILE = "agent.db"
-MQTT_HOST, MQTT_PORT = "localhost", 1883
+MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER", "")           # empty = connect without a login (only works if Mosquitto allows anonymous)
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 NOYAU_URL = os.getenv("NOYAU_URL", "http://localhost:8000")
 STARTED_AT = time.time()
 DEFAULT_LIMITS = {"temp_min": 2.0, "temp_max": 8.0, "offline_timeout_sec": 120}
@@ -241,7 +244,11 @@ async def watchdog_loop():
 
 # ---------------------------------------------------------------- MQTT side
 def on_connect(client, userdata, flags, reason_code, properties):
-    print("MQTT: connected to Mosquitto")
+    if reason_code.is_failure:
+        # Mosquitto answered but said no (wrong or missing login). Say so clearly instead of pretending.
+        print(f"MQTT: login REFUSED by Mosquitto ({reason_code}). Check MQTT_USER and MQTT_PASSWORD.")
+        return
+    print("MQTT: connected to Mosquitto" + (f" as '{MQTT_USER}'" if MQTT_USER else " (no login)"))
     client.subscribe("tenant/+/depot/+/sensor/+", qos=1)
 
 
@@ -329,6 +336,8 @@ async def lifespan(app):
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
     client.connect_async(MQTT_HOST, MQTT_PORT)   # does not crash if Mosquitto is down
     client.loop_start()                          # listens in a background thread
     watchdog = asyncio.create_task(watchdog_loop())

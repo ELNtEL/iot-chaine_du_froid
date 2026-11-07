@@ -1,0 +1,16 @@
+services:
+  nodered:
+    image: nodered/node-red:latest
+    container_name: coldchain_nodered
+    ports:
+      - "1880:1880"
+    environment:
+      - MQTT_HOST=host.docker.internal
+      - MQTT_USER=nodered
+      - MQTT_PASSWORD=${MQTT_NODERED_PASSWORD}
+      - TZ=Africa/Algiers
+    volumes:
+      - ./nodered:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

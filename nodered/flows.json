@@ -1,0 +1,177 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Cold chain pipeline",
+        "disabled": false,
+        "info": "Watches the raw sensor topics, checks every message, forwards good ones to clean/..., bad ones to deadletter/..."
+    },
+    {
+        "id": "broker1",
+        "type": "mqtt-broker",
+        "name": "Mosquitto",
+        "broker": "${MQTT_HOST}",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true
+    },
+    {
+        "id": "in1",
+        "type": "mqtt in",
+        "z": "tab1",
+        "name": "raw sensors",
+        "topic": "tenant/+/depot/+/sensor/+",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "broker1",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 130,
+        "y": 100,
+        "wires": [
+            [
+                "fn1"
+            ]
+        ]
+    },
+    {
+        "id": "fn1",
+        "type": "function",
+        "z": "tab1",
+        "name": "validate",
+        "func": "const stats = flow.get(\"stats\") || { valid: 0, invalid: 0, reasons: {}, last_seen: {} };\n\nfunction reject(reason) {\n    stats.invalid++;\n    stats.reasons[reason] = (stats.reasons[reason] || 0) + 1;\n    flow.set(\"stats\", stats);\n    node.status({ fill: \"red\", shape: \"dot\", text: \"last reject: \" + reason });\n    return [null, {\n        topic: \"deadletter/\" + reason,\n        payload: { reason: reason, original_topic: msg.topic, raw: String(msg.payload).slice(0, 500) }\n    }];\n}\n\n// 1. topic shape: tenant/<t>/depot/<d>/sensor/<s>\nconst p = msg.topic.split(\"/\");\nif (p.length !== 6 || p[0] !== \"tenant\" || p[2] !== \"depot\" || p[4] !== \"sensor\") {\n    return reject(\"bad_topic\");\n}\n\n// 2. JSON\nlet d;\ntry { d = JSON.parse(String(msg.payload)); } catch (e) { return reject(\"bad_json\"); }\nif (d === null || typeof d !== \"object\" || Array.isArray(d)) { return reject(\"bad_json\"); }\n\n// 3. required fields\nfor (const k of [\"tenant_id\", \"depot_id\", \"device_id\"]) {\n    if (typeof d[k] !== \"string\" || d[k] === \"\") { return reject(\"missing_\" + k); }\n}\n\n// 4. topic and payload must agree (cross-company safety check)\nif (p[1] !== d.tenant_id || p[3] !== d.depot_id || p[5] !== d.device_id) {\n    return reject(\"topic_payload_mismatch\");\n}\n\n// 5. values\nconst num = (v) => typeof v === \"number\" && Number.isFinite(v);\nif (d.status === \"PROBE_ERROR\") {\n    // the firmware reports a dead probe on purpose, so no numbers are required\n} else {\n    if (!num(d.temperature_celsius)) { return reject(\"missing_temperature\"); }\n    if (d.temperature_celsius < -60 || d.temperature_celsius > 80) { return reject(\"temperature_out_of_range\"); }\n}\nif (d.probe_temperature_celsius !== undefined && d.probe_temperature_celsius !== null) {\n    const t = d.probe_temperature_celsius;\n    if (!num(t) || t < -55 || t > 125 || t === 85 || t === -127) { return reject(\"probe_glitch\"); }\n}\nif (d.humidity_percent !== undefined && d.humidity_percent !== null) {\n    if (!num(d.humidity_percent) || d.humidity_percent < 0 || d.humidity_percent > 100) { return reject(\"humidity_out_of_range\"); }\n}\n\nstats.valid++;\nstats.last_seen[d.tenant_id + \"/\" + d.depot_id] = new Date().toISOString();\nflow.set(\"stats\", stats);\nnode.status({ fill: \"green\", shape: \"dot\", text: \"valid: \" + stats.valid + \"  rejected: \" + stats.invalid });\nreturn [{ topic: \"clean/\" + msg.topic, payload: msg.payload }, null];\n",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 100,
+        "wires": [
+            [
+                "out_clean",
+                "dbg_ok"
+            ],
+            [
+                "out_dead",
+                "dbg_bad"
+            ]
+        ]
+    },
+    {
+        "id": "out_clean",
+        "type": "mqtt out",
+        "z": "tab1",
+        "name": "clean/...",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "broker1",
+        "x": 560,
+        "y": 70,
+        "wires": []
+    },
+    {
+        "id": "out_dead",
+        "type": "mqtt out",
+        "z": "tab1",
+        "name": "deadletter/...",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "broker": "broker1",
+        "x": 570,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "dbg_ok",
+        "type": "debug",
+        "z": "tab1",
+        "name": "valid",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 550,
+        "y": 30,
+        "wires": []
+    },
+    {
+        "id": "dbg_bad",
+        "type": "debug",
+        "z": "tab1",
+        "name": "rejected",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 560,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "http_in",
+        "type": "http in",
+        "z": "tab1",
+        "name": "",
+        "url": "/stats",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 120,
+        "y": 280,
+        "wires": [
+            [
+                "fn_stats"
+            ]
+        ]
+    },
+    {
+        "id": "fn_stats",
+        "type": "function",
+        "z": "tab1",
+        "name": "read counters",
+        "func": "msg.payload = flow.get(\"stats\") || { valid: 0, invalid: 0, reasons: {}, last_seen: {} };\nmsg.statusCode = 200;\nmsg.headers = { \"Content-Type\": \"application/json\" };\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 320,
+        "y": 280,
+        "wires": [
+            [
+                "http_out"
+            ]
+        ]
+    },
+    {
+        "id": "http_out",
+        "type": "http response",
+        "z": "tab1",
+        "name": "",
+        "statusCode": "",
+        "headers": {},
+        "x": 520,
+        "y": 280,
+        "wires": []
+    }
+]

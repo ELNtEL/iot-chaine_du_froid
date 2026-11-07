@@ -11,11 +11,25 @@ PERIOD_SEC = 3          # real firmware: 30
 # python fake_sensor.py hot   -> temperatures between 9 and 12 (too warm)
 # python fake_sensor.py       -> temperatures between 3 and 6 (normal)
 HOT = len(sys.argv) > 1 and sys.argv[1] == "hot"
-HOST, PORT = "localhost", 1883
+HOST = os.environ.get("MQTT_HOST", "localhost")
+PORT = int(os.environ.get("MQTT_PORT", "1883"))
+# A company's device logs in with the company's tenant id as its username (the broker's access rules expect that),
+# and the password the company was given. Empty password = connect without a login.
+DEVICE_PASSWORD = os.environ.get("DEVICE_PASSWORD", "")
 
 topic = f"tenant/{TENANT_ID}/depot/{DEPOT_ID}/sensor/{DEVICE_ID}"
 
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code.is_failure:
+        print(f"LOGIN REFUSED by Mosquitto ({reason_code}). Check DEVICE_PASSWORD and TENANT_ID.")
+    else:
+        print("connected to Mosquitto" + (f" as '{TENANT_ID}'" if DEVICE_PASSWORD else " (no login)"))
+
+
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.on_connect = on_connect
+if DEVICE_PASSWORD:
+    client.username_pw_set(TENANT_ID, DEVICE_PASSWORD)
 client.connect(HOST, PORT)
 client.loop_start()
 

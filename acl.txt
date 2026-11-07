@@ -1,0 +1,14 @@
+# Every company logs in with its own tenant id as the username.
+# %u is replaced by the login name, so ONE rule covers every company:
+# a login may publish only under tenant/<its own name>/...
+pattern write tenant/%u/#
+
+# The agent reads every company's readings (it is the one that checks them).
+user agent
+topic read tenant/#
+
+# Node-RED reads the raw readings and publishes its verdicts.
+user nodered
+topic read tenant/#
+topic write clean/#
+topic write deadletter/#

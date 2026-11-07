@@ -4,3 +4,9 @@ __pycache__/
 venv/
 .env
 secrets.h
+start_agent.bat
+nodered/.config*
+nodered/flows_cred.json
+nodered/node_modules/
+nodered/*.backup
+passwd.txt
